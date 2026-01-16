@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -6,7 +7,7 @@
 
 
 import React, { useState, useRef, useEffect } from 'react';
-import { MapPin, Navigation, Loader2, Footprints, Car, CloudRain, Sparkles, ScrollText, Sword } from 'lucide-react';
+import { MapPin, Navigation, Loader2, Footprints, Car, CloudRain, Sparkles, ScrollText, Sword, Mic2 } from 'lucide-react';
 import { RouteDetails, AppState, StoryStyle } from '../types';
 
 declare global {
@@ -30,99 +31,137 @@ const STYLES: { id: StoryStyle; label: string; icon: React.ElementType; desc: st
     { id: 'FANTASY', label: 'Fantasy Adventure', icon: Sword, desc: 'An epic quest through a magical realm.' },
 ];
 
+const VOICES = [
+    { id: 'Kore', label: 'Kore', desc: 'Default balanced narration' },
+    { id: 'en-US-Wavenet-A', label: 'Voice A', desc: 'Warm and resonant' },
+    { id: 'en-US-Wavenet-B', label: 'Voice B', desc: 'Clear and analytical' },
+    { id: 'en-US-Wavenet-C', label: 'Voice C', desc: 'Soft and expressive' },
+];
+
 const RoutePlanner: React.FC<Props> = ({ onRouteFound, appState, externalError }) => {
   const [startAddress, setStartAddress] = useState('');
   const [endAddress, setEndAddress] = useState('');
   const [travelMode, setTravelMode] = useState<TravelMode>('WALKING');
   const [selectedStyle, setSelectedStyle] = useState<StoryStyle>('NOIR');
+  const [selectedVoice, setSelectedVoice] = useState<string>('Kore');
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  const startInputRef = useRef<HTMLInputElement>(null);
-  const endInputRef = useRef<HTMLInputElement>(null);
+  const startContainerRef = useRef<HTMLDivElement>(null);
+  const endContainerRef = useRef<HTMLDivElement>(null);
+  
+  // Store the actual instances to read current values if needed
+  const startAutocompleteRef = useRef<any>(null);
+  const endAutocompleteRef = useRef<any>(null);
 
-  // Sync external errors (like timeouts from App.tsx) into local UI
   useEffect(() => {
     if (externalError) {
         setError(externalError);
     }
   }, [externalError]);
 
-  // Initialize Classic Autocomplete
+  // Initialize Modern Place Autocomplete Element
   useEffect(() => {
     let isMounted = true;
+    let interval: any = null;
 
     const initAutocomplete = async () => {
-        if (!window.google?.maps?.places) return;
+        // We need the 'places' library which is loaded in App.tsx
+        if (!window.google?.maps?.places?.PlaceAutocompleteElement) {
+             return;
+        }
         
         try {
              const setupAutocomplete = (
-                 inputElement: HTMLInputElement | null,
-                 setAddress: (addr: string) => void
+                 container: HTMLDivElement | null,
+                 setAddress: (addr: string) => void,
+                 placeholder: string
              ) => {
-                 if (!inputElement) return;
+                 if (!container || container.children.length > 0) return null;
 
-                 const autocomplete = new window.google.maps.places.Autocomplete(inputElement, {
-                     fields: ['formatted_address', 'geometry', 'name'],
-                     types: ['geocode', 'establishment']
-                 });
+                 // Use the modern PlaceAutocompleteElement constructor
+                 const autocomplete = new window.google.maps.places.PlaceAutocompleteElement();
+                 
+                 // Styling via CSS variables to match our theme
+                 // We apply specific colors here to ensure variables are set if Shadow DOM uses them
+                 autocomplete.style.width = '100%';
+                 autocomplete.style.height = '100%';
+                 autocomplete.style.border = 'none';
+                 autocomplete.style.background = 'transparent';
+                 autocomplete.setAttribute('placeholder', placeholder);
+                 
+                 // Event listener for the new selection event
+                 autocomplete.addEventListener('gmp-placeselect', async (event: any) => {
+                     const { place } = event;
+                     if (!place) return;
 
-                 autocomplete.addListener('place_changed', () => {
-                     if (!isMounted) return;
-                     const place = autocomplete.getPlace();
-                     
-                     if (!place.geometry || !place.geometry.location) {
-                         if (inputElement.value && window.google.maps.Geocoder) {
-                             const geocoder = new window.google.maps.Geocoder();
-                             geocoder.geocode({ address: inputElement.value }, (results: any, status: any) => {
-                                 if (status === 'OK' && results[0]) {
-                                     setAddress(results[0].formatted_address);
-                                     inputElement.value = results[0].formatted_address;
-                                 }
-                             });
+                     try {
+                         // Fetch required fields for the new Place object
+                         await place.fetchFields({ fields: ['formattedAddress', 'location', 'displayName'] });
+                         const address = place.formattedAddress || place.displayName;
+                         if (isMounted) {
+                             setAddress(address);
                          }
-                         return;
+                     } catch (e) {
+                         console.error("Error fetching place details:", e);
                      }
-
-                     const address = place.formatted_address || place.name;
-                     setAddress(address);
-                     inputElement.value = address;
                  });
+
+                 container.appendChild(autocomplete);
+                 return autocomplete;
              };
 
-             setupAutocomplete(startInputRef.current, setStartAddress);
-             setupAutocomplete(endInputRef.current, setEndAddress);
+             if (!startAutocompleteRef.current) {
+                startAutocompleteRef.current = setupAutocomplete(startContainerRef.current, setStartAddress, "Starting Point");
+             }
+             if (!endAutocompleteRef.current) {
+                endAutocompleteRef.current = setupAutocomplete(endContainerRef.current, setEndAddress, "Destination");
+             }
 
         } catch (e) {
-            console.error("Failed to initialize Places Autocomplete:", e);
+            console.error("Failed to initialize PlaceAutocompleteElement:", e);
             if (isMounted) setError("Location search failed to initialize. Please refresh.");
         }
     };
 
-    if (window.google?.maps?.places) {
-        initAutocomplete();
-    } else {
-        const interval = setInterval(() => {
-            if (window.google?.maps?.places) {
-                clearInterval(interval);
-                initAutocomplete();
-            }
-        }, 300);
-        return () => {
-            isMounted = false;
+    // Check periodically if the script loaded
+    interval = setInterval(() => {
+        if (window.google?.maps?.places?.PlaceAutocompleteElement) {
             clearInterval(interval);
-        };
-    }
-    
-    return () => { isMounted = false; };
+            initAutocomplete();
+        }
+    }, 500);
+
+    return () => {
+        isMounted = false;
+        clearInterval(interval);
+        // Cleanup elements to prevent "Cannot read properties of undefined (reading 'suggestions')" crash
+        if (startContainerRef.current && startAutocompleteRef.current) {
+            try { 
+                if (startContainerRef.current.contains(startAutocompleteRef.current)) {
+                    startContainerRef.current.removeChild(startAutocompleteRef.current);
+                }
+            } catch(e) {}
+            startAutocompleteRef.current = null;
+        }
+        if (endContainerRef.current && endAutocompleteRef.current) {
+            try { 
+                if (endContainerRef.current.contains(endAutocompleteRef.current)) {
+                    endContainerRef.current.removeChild(endAutocompleteRef.current);
+                }
+            } catch(e) {}
+            endAutocompleteRef.current = null;
+        }
+    };
   }, []);
 
   const handleCalculate = () => {
-    const finalStart = startInputRef.current?.value || startAddress;
-    const finalEnd = endInputRef.current?.value || endAddress;
+    // If user typed but didn't select, or to catch the current text
+    const finalStart = startAddress;
+    const finalEnd = endAddress;
 
     if (!finalStart || !finalEnd) {
-      setError("Please search for and select both a start and end location.");
+      setError("Please search for and select both a start and end location from the suggestions.");
       return;
     }
 
@@ -146,7 +185,6 @@ const RoutePlanner: React.FC<Props> = ({ onRouteFound, appState, externalError }
         if (status === window.google.maps.DirectionsStatus.OK) {
           const leg = result.routes[0].legs[0];
 
-          // 4 hours limit (14400 seconds) to prevent generation timeouts
           if (leg.duration.value > 14400) {
             setError("Sorry, this journey is too long. Please select a route under 4 hours.");
             return;
@@ -159,7 +197,7 @@ const RoutePlanner: React.FC<Props> = ({ onRouteFound, appState, externalError }
             duration: leg.duration.text,
             durationSeconds: leg.duration.value,
             travelMode: travelMode,
-            voiceName: 'Kore', // Updated to a valid Gemini TTS voice
+            voiceName: selectedVoice,
             storyStyle: selectedStyle
           });
         } else {
@@ -179,41 +217,57 @@ const RoutePlanner: React.FC<Props> = ({ onRouteFound, appState, externalError }
 
   return (
     <div className={`transition-all duration-700 ${isLocked ? 'opacity-50 pointer-events-none grayscale' : ''}`}>
+      <style>{`
+        /* Correct tag name for Maps JS API V3 place autocomplete */
+        gmp-place-autocomplete {
+            --gmpx-color-surface: transparent;
+            --gmpx-color-on-surface: #000000;
+            --gmpx-color-on-surface-variant: #57534E; /* stone-600 */
+        }
+
+        gmp-place-autocomplete::part(input) {
+          background: transparent;
+          border: none;
+          padding-left: 3rem;
+          font-family: 'Inter', sans-serif;
+          font-weight: 500;
+          font-size: 1rem;
+          color: #000000 !important; /* Force black for contrast */
+          height: 100%;
+          opacity: 1;
+        }
+
+        gmp-place-autocomplete::part(input):focus {
+            outline: none;
+        }
+
+        /* Ensure placeholder is visible but distinct */
+        gmp-place-autocomplete::part(input)::placeholder {
+            color: #78716c; /* stone-500 */
+            opacity: 1;
+        }
+      `}</style>
+
       <div className="space-y-8 bg-white/80 backdrop-blur-lg p-8 md:p-10 rounded-[2rem] shadow-2xl shadow-stone-200/50 border border-white/50">
         <div className="space-y-1">
             <h2 className="text-2xl font-serif text-editorial-900">Plan Your Journey</h2>
-            <p className="text-stone-500">Search locations and customize your experience.</p>
+            <p className="text-stone-500">Search locations using the latest Places search.</p>
         </div>
 
         <div className="space-y-4">
-          <div className="relative group z-20 h-14 bg-stone-50/50 border-2 border-stone-100 focus-within:border-editorial-900 focus-within:bg-white rounded-xl transition-all shadow-sm focus-within:shadow-md overflow-hidden">
+          <div className="relative group z-20 h-14 bg-stone-50/50 border-2 border-stone-100 focus-within:border-editorial-900 focus-within:bg-white rounded-xl transition-all shadow-sm focus-within:shadow-md">
             <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-stone-400 group-focus-within:text-editorial-900 transition-colors pointer-events-none z-10" size={20} />
-            <input
-                ref={startInputRef}
-                type="text"
-                placeholder="Starting Point"
-                className="w-full h-full bg-transparent p-0 pl-12 pr-4 text-editorial-900 placeholder-stone-400 outline-none font-medium text-base"
-                onChange={(e) => setStartAddress(e.target.value)}
-                disabled={isLocked}
-            />
+            <div ref={startContainerRef} className="w-full h-full" />
           </div>
 
-          <div className="relative group z-10 h-14 bg-stone-50/50 border-2 border-stone-100 focus-within:border-editorial-900 focus-within:bg-white rounded-xl transition-all shadow-sm focus-within:shadow-md overflow-hidden">
+          <div className="relative group z-10 h-14 bg-stone-50/50 border-2 border-stone-100 focus-within:border-editorial-900 focus-within:bg-white rounded-xl transition-all shadow-sm focus-within:shadow-md">
             <Navigation className="absolute left-4 top-1/2 -translate-y-1/2 text-stone-400 group-focus-within:text-editorial-900 transition-colors pointer-events-none z-10" size={20} />
-            <input
-                ref={endInputRef}
-                type="text"
-                placeholder="Destination"
-                className="w-full h-full bg-transparent p-0 pl-12 pr-4 text-editorial-900 placeholder-stone-400 outline-none font-medium text-base"
-                onChange={(e) => setEndAddress(e.target.value)}
-                disabled={isLocked}
-            />
+            <div ref={endContainerRef} className="w-full h-full" />
           </div>
         </div>
 
         {/* Settings Grid */}
         <div className="grid grid-cols-1 gap-6">
-            {/* Travel Mode */}
             <div className="space-y-3">
                 <label className="text-sm font-medium text-stone-500 uppercase tracking-wider">Travel Mode</label>
                 <div className="flex gap-2 bg-stone-100/50 p-1.5 rounded-xl border border-stone-100">
@@ -236,6 +290,31 @@ const RoutePlanner: React.FC<Props> = ({ onRouteFound, appState, externalError }
                         </button>
                     ))}
                 </div>
+            </div>
+        </div>
+
+        {/* Voice Selector */}
+        <div className="space-y-3">
+            <label className="text-sm font-medium text-stone-500 uppercase tracking-wider">Narration Voice</label>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {VOICES.map((voice) => {
+                    const isSelected = selectedVoice === voice.id;
+                    return (
+                        <button
+                            key={voice.id}
+                            onClick={() => setSelectedVoice(voice.id)}
+                            disabled={isLocked}
+                            className={`flex flex-col items-center gap-1 p-3 rounded-xl border-2 text-center transition-all ${
+                                isSelected
+                                    ? 'border-editorial-900 bg-editorial-900 text-white shadow-md'
+                                    : 'border-stone-100 bg-stone-50/50 text-stone-600 hover:border-stone-300 hover:bg-stone-100'
+                            }`}
+                        >
+                            <Mic2 size={20} className={`shrink-0 ${isSelected ? 'text-white' : 'text-stone-400'}`} />
+                            <div className="text-xs font-bold truncate w-full">{voice.label}</div>
+                        </button>
+                    );
+                })}
             </div>
         </div>
 

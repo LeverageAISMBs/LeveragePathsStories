@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -16,20 +17,25 @@ export default defineConfig(({ mode }) => {
       if (!key) return undefined;
       const k = key.trim();
       // Filter out common placeholders or invalid values
-      if (k === '' || k === 'GEMINI_API_KEY' || k === 'API_KEY' || k.includes('YOUR_API_KEY')) return undefined;
+      if (k === '' || k === 'undefined' || k === 'GEMINI_API_KEY' || k === 'API_KEY' || k.includes('YOUR_API_KEY')) return undefined;
       return k;
     };
 
     // Try to find a valid key in various locations
-    const apiKey = cleanKey(process.env.API_KEY) || 
-                   cleanKey(process.env.GEMINI_API_KEY) || 
-                   cleanKey(env.API_KEY) || 
-                   cleanKey(env.GEMINI_API_KEY);
+    // We prioritize specific keys for specific services if available
+    const mapsKey = cleanKey(process.env.GOOGLE_MAPS_API_KEY) || 
+                    cleanKey(env.GOOGLE_MAPS_API_KEY);
 
-    if (!apiKey) {
+    const genAIKey = cleanKey(process.env.API_KEY) || 
+                     cleanKey(process.env.GEMINI_API_KEY) || 
+                     cleanKey(env.API_KEY) || 
+                     cleanKey(env.GEMINI_API_KEY);
+
+    // If no specific maps key, fallback to the generic one (assuming user has one key for both for now)
+    const finalMapsKey = mapsKey || genAIKey;
+
+    if (!genAIKey) {
        console.warn("⚠️  WARNING: API_KEY is undefined. The app may not function correctly.");
-    } else {
-       console.log("✅ API_KEY loaded for build.");
     }
 
     return {
@@ -39,9 +45,9 @@ export default defineConfig(({ mode }) => {
       },
       plugins: [react()],
       define: {
-        // Correctly inject the string value. 
-        // If apiKey is undefined, it sets it to undefined (or empty string if preferred, but undefined is safer to detect)
-        'process.env.API_KEY': apiKey ? JSON.stringify(apiKey) : 'undefined',
+        // Correctly inject the string values. 
+        'process.env.API_KEY': genAIKey ? JSON.stringify(genAIKey) : 'undefined',
+        'process.env.GOOGLE_MAPS_API_KEY': finalMapsKey ? JSON.stringify(finalMapsKey) : 'undefined',
       },
       resolve: {
         alias: {

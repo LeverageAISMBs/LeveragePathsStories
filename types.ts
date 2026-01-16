@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -14,7 +15,7 @@ export interface RouteDetails {
   duration: string;
   durationSeconds: number;
   travelMode: string; // 'WALKING' | 'DRIVING'
-  voiceName?: string; // Optional for now to maintain backward compatibility if needed
+  voiceName: string;
   storyStyle: StoryStyle;
 }
 

@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -6,7 +7,7 @@
 
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Headphones, Map as MapIcon, Sparkles, ArrowRight, Loader2, AlertTriangle } from 'lucide-react';
+import { Headphones, Map as MapIcon, Sparkles, ArrowRight, Loader2, AlertTriangle, X } from 'lucide-react';
 import RoutePlanner from './components/RoutePlanner';
 import StoryPlayer from './components/StoryPlayer';
 import MapBackground from './components/MapBackground';
@@ -49,45 +50,42 @@ function App() {
   useEffect(() => {
     const SCRIPT_ID = 'google-maps-script';
     
-    const getApiKey = () => {
-        const key = process.env.API_KEY;
-        if (!key) return null;
-        // Clean up quotes just in case JSON.stringify added them in define, or env var has them
+    const getMapsApiKey = () => {
+        // Prioritize specific maps key, fallback to generic
+        const key = process.env.GOOGLE_MAPS_API_KEY || process.env.API_KEY;
+        if (!key || key === 'undefined' || key === 'null') return null;
         return key.replace(/["']/g, "").trim();
     };
 
-    const apiKey = getApiKey();
-
-    console.log(process.env.API_KEY)
+    const apiKey = getMapsApiKey();
 
     if (!apiKey) {
-        setScriptError("API Key is missing from environment variables.");
-        console.error("Critical: process.env.API_KEY is missing or empty.");
+        setScriptError("API Key is missing. Maps functionality will be limited.");
+        console.warn("Critical: API Key for Maps is missing or 'undefined'.");
         return;
     }
     
     if (document.getElementById(SCRIPT_ID) || window.google?.maps) return;
 
-
-
     const script = document.createElement('script');
     script.id = SCRIPT_ID;
-    script.src = `https://maps.googleapis.com/maps/api/js?key=AIzaSyBdf3qEHerho4yhseDl3vf-06ZHUcub-rI&loading=async&v=weekly&libraries=places`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&loading=async&v=weekly&libraries=places`;
     script.async = true;
     script.defer = true;
     script.onerror = () => setScriptError("Google Maps failed to load.");
     // @ts-ignore
-    window.gm_authFailure = () => setScriptError("Google Maps authentication failed. Please check your API key.");
+    window.gm_authFailure = () => {
+        console.error("Google Maps Authentication Failed.");
+        setScriptError("Google Maps authentication failed. Please check your API key.");
+    };
     document.head.appendChild(script);
   }, []);
 
   // --- Continuous Buffering Engine ---
-  // Keeps 2 segments ahead of the current playback position
   useEffect(() => {
       if (!story || !route || appState < AppState.READY_TO_PLAY) return;
 
       const totalGenerated = story.segments.length;
-      // We use index + 1 because playingIndex is 0-based, but segment count is 1-based total
       const neededBufferIndex = currentPlayingIndex + 3; 
 
       if (totalGenerated < neededBufferIndex && totalGenerated < story.totalSegmentsEstimate && !isGeneratingRef.current) {
@@ -103,34 +101,26 @@ function App() {
           setIsBackgroundGenerating(true);
           console.log(`[Buffering] Starting generation for Segment ${index}...`);
 
-          // Gather all previous text for robust context, but limit length to avoid token overflow
           const allPreviousText = story.segments.map(s => s.text).join(" ").slice(-3000);
-          
-          // Get the specific outline beat for this segment. 
-          // Fallback to generic if we somehow exceed the outline length.
-          const segmentOutline = story.outline[index - 1] || "Continue the journey towards the final destination, wrapping up any loose narrative threads.";
+          const segmentOutline = story.outline[index - 1] || "Continue the journey towards the final destination.";
 
-          // 1. Generate Text (increased to 60s timeout for safety)
           const segmentData = await withTimeout(
               generateSegment(route, index, story.totalSegmentsEstimate, segmentOutline, allPreviousText),
               60000,
               `Text generation timed out for segment ${index}`
           );
           
-          // 2. Generate Audio (increased to 100s timeout as TTS can be slow under load)
           const AudioContextClass = window.AudioContext || window.webkitAudioContext;
           const tempCtx = new AudioContextClass();
           const audioBuffer = await withTimeout(
-              generateSegmentAudio(segmentData.text, tempCtx),
+              generateSegmentAudio(segmentData.text, tempCtx, route.voiceName),
               100000,
               `Audio generation timed out for segment ${index}`
           );
           await tempCtx.close();
 
-          // 3. Append to stream
           setStory(prev => {
               if (!prev) return null;
-              // Ensure we don't add duplicates if race conditions occurred
               if (prev.segments.some(s => s.index === index)) return prev;
               return {
                   ...prev,
@@ -141,15 +131,12 @@ function App() {
 
       } catch (e) {
           console.error(`Failed to generate segment ${index}`, e);
-          // We don't alert the user, we just hope the next attempt works.
-          // The continuous loop in useEffect will retry if we are still behind buffer.
       } finally {
           isGeneratingRef.current = false;
           setIsBackgroundGenerating(false);
       }
   };
 
-  // --- Handlers ---
   const handleGenerateStory = async (details: RouteDetails) => {
     setRoute(details);
     setGenerationError(null);
@@ -161,8 +148,6 @@ function App() {
       const totalSegmentsEstimate = calculateTotalSegments(details.durationSeconds);
       setLoadingMessage("Crafting story arc...1 - 2 minutes");
 
-      // 1. Generate the Story Outline first
-      // Increased timeout to 60s to handle long complex journeys
       const outline = await withTimeout(
           generateStoryOutline(details, totalSegmentsEstimate),
           60000, "Story outline generation timed out"
@@ -170,7 +155,6 @@ function App() {
 
       setLoadingMessage("Writing first chapter... 1 minute");
 
-      // 2. Generate first segment using the first outline beat
       const firstOutlineBeat = outline[0] || "Begin the journey.";
       const seg1Data = await withTimeout(
           generateSegment(details, 1, totalSegmentsEstimate, firstOutlineBeat, ""),
@@ -181,7 +165,7 @@ function App() {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       const tempCtx = new AudioContextClass();
       const seg1Audio = await withTimeout(
-          generateSegmentAudio(seg1Data.text, tempCtx),
+          generateSegmentAudio(seg1Data.text, tempCtx, details.voiceName),
           100000, "Initial audio generation timed out"
       );
       await tempCtx.close();
@@ -218,26 +202,24 @@ function App() {
       window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  // --- Render Helpers ---
   const isHeroVisible = appState < AppState.READY_TO_PLAY;
-
-  if (scriptError) {
-      return (
-          <div className="min-h-screen bg-editorial-100 flex items-center justify-center p-6">
-              <div className="bg-white p-8 rounded-[2rem] shadow-xl max-w-md text-center space-y-4 border-2 border-red-100">
-                  <AlertTriangle size={32} className="text-red-500 mx-auto" />
-                  <p className="text-stone-600 font-medium">{scriptError}</p>
-              </div>
-          </div>
-      )
-  }
 
   return (
     <div className="min-h-screen bg-editorial-100 text-editorial-900 relative selection:bg-stone-200">
       <MapBackground route={route} />
 
+      {/* Non-intrusive error display for script issues */}
+      {scriptError && (
+          <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] bg-white border-2 border-red-100 p-3 px-5 rounded-full shadow-lg flex items-center gap-3 animate-fade-in">
+              <AlertTriangle size={18} className="text-red-500" />
+              <span className="text-sm font-medium text-stone-600">{scriptError}</span>
+              <button onClick={() => setScriptError(null)} className="text-stone-400 hover:text-stone-600 ml-2">
+                  <X size={16} />
+              </button>
+          </div>
+      )}
+
       <main className="relative z-10 max-w-7xl mx-auto px-6 pt-16 pb-32">
-        {/* Hero Section */}
         <div className={`transition-all duration-700 origin-top ease-in-out max-w-4xl mx-auto ${isHeroVisible ? 'opacity-100 translate-y-0 mb-16' : 'opacity-0 -translate-y-10 h-0 overflow-hidden mb-0'}`}>
             <h1 className="text-5xl md:text-7xl font-serif leading-[1.05] tracking-tight mb-8">
                 Turn your journey into <br/> <span className="italic text-stone-500">a living story.</span>
@@ -247,7 +229,6 @@ function App() {
             </p>
         </div>
 
-        {/* Stage 1: Planning */}
         <div className={`max-w-4xl mx-auto transition-all duration-700 ${appState > AppState.GENERATING_INITIAL_SEGMENT ? 'hidden' : 'block'}`}>
             <RoutePlanner 
               onRouteFound={handleGenerateStory} 
@@ -256,7 +237,6 @@ function App() {
             />
         </div>
 
-        {/* Stage 3: Loading Initial Segment (Formerly followed Stage 2 Confirmation) */}
         {appState === AppState.GENERATING_INITIAL_SEGMENT && (
             <div className="mt-16 flex flex-col items-center justify-center space-y-8 animate-fade-in text-center py-12 max-w-4xl mx-auto">
                 <Loader2 size={48} className="animate-spin text-editorial-900" />
@@ -264,7 +244,6 @@ function App() {
             </div>
         )}
 
-        {/* Stage 4: Final Player (Continuous Stream) */}
         {appState >= AppState.READY_TO_PLAY && story && route && (
             <div className="mt-8 animate-fade-in">
                 <StoryPlayer 

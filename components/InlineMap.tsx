@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -18,7 +19,9 @@ const InlineMap: React.FC<Props> = ({ route, currentSegmentIndex, totalSegments 
   const googleMapRef = useRef<any>(null);
   const directionsRendererRef = useRef<any>(null);
   const progressMarkerRef = useRef<any>(null);
-  const routePathRef = useRef<any[]>([]); // Store the array of LatLngs
+  const pulseCircleRef = useRef<any>(null);
+  const routePathRef = useRef<any[]>([]); 
+  const animationFrameRef = useRef<number>(0);
 
   // 1. Init Map
   useEffect(() => {
@@ -57,11 +60,16 @@ const InlineMap: React.FC<Props> = ({ route, currentSegmentIndex, totalSegments 
         suppressMarkers: false,
         polylineOptions: {
           strokeColor: "#1A1A1A",
-          strokeWeight: 5,
-          strokeOpacity: 0.9
+          strokeWeight: 6,
+          strokeOpacity: 0.95
         }
       });
     }
+
+    // Cleanup pulse animation
+    return () => {
+        if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    };
   }, []);
 
   // 2. Calculate Route & Save Path
@@ -77,29 +85,44 @@ const InlineMap: React.FC<Props> = ({ route, currentSegmentIndex, totalSegments 
           (result: any, status: any) => {
             if (status === window.google.maps.DirectionsStatus.OK) {
               directionsRendererRef.current.setDirections(result);
-              
-              // Save the detailed path for placing the marker later
               routePathRef.current = result.routes[0].overview_path;
 
               const bounds = result.routes[0].bounds;
               googleMapRef.current.fitBounds(bounds, { top: 50, right: 50, bottom: 50, left: 50 });
 
-              // Create progress marker if it doesn't exist
+              // Progress Marker
               if (!progressMarkerRef.current) {
                   progressMarkerRef.current = new window.google.maps.Marker({
                       map: googleMapRef.current,
-                      position: routePathRef.current[0], // Start at beginning
-                      zIndex: 999, // On top of everything
+                      position: routePathRef.current[0],
+                      zIndex: 1000,
                       icon: {
                           path: window.google.maps.SymbolPath.CIRCLE,
-                          scale: 8,
-                          fillColor: "#1A1A1A", // Editorial black
+                          scale: 9,
+                          fillColor: "#1A1A1A",
                           fillOpacity: 1,
                           strokeColor: "#FFFFFF",
                           strokeWeight: 3,
                       },
-                      title: "You are here"
+                      optimized: false // Required for some animations
                   });
+              }
+
+              // Pulse Circle
+              if (!pulseCircleRef.current) {
+                  pulseCircleRef.current = new window.google.maps.Circle({
+                      map: googleMapRef.current,
+                      center: routePathRef.current[0],
+                      radius: 0, // Managed by animation
+                      fillColor: "#1A1A1A",
+                      fillOpacity: 0.2,
+                      strokeColor: "#1A1A1A",
+                      strokeWeight: 1,
+                      strokeOpacity: 0.3,
+                      clickable: false,
+                      zIndex: 999
+                  });
+                  startPulseAnimation();
               }
             }
           }
@@ -107,13 +130,39 @@ const InlineMap: React.FC<Props> = ({ route, currentSegmentIndex, totalSegments 
       }
   }, [route]);
 
-  // 3. Update Marker Position based on progress
+  // 3. Pulse Animation Loop
+  const startPulseAnimation = () => {
+      let start = Date.now();
+      const animate = () => {
+          if (!pulseCircleRef.current || !progressMarkerRef.current) return;
+          
+          const elapsed = Date.now() - start;
+          const duration = 2000; // 2 seconds per pulse
+          const t = (elapsed % duration) / duration;
+          
+          // Smooth pulse: expansion followed by fade
+          // We estimate a visual radius based on t. 
+          // Note: In meters, so this depends on zoom level for "visual" consistency.
+          const radius = t * 150; 
+          const opacity = 0.4 * (1 - t);
+          
+          pulseCircleRef.current.setRadius(radius);
+          pulseCircleRef.current.setOptions({ 
+              fillOpacity: opacity, 
+              strokeOpacity: opacity * 1.5 
+          });
+          pulseCircleRef.current.setCenter(progressMarkerRef.current.getPosition());
+
+          animationFrameRef.current = requestAnimationFrame(animate);
+      };
+      animate();
+  };
+
+  // 4. Update Marker Position with Smooth Interpolation
   useEffect(() => {
       if (!progressMarkerRef.current || routePathRef.current.length === 0) return;
 
       const path = routePathRef.current;
-      // Calculate approximate index along the path array based on segment progress
-      // Ensure we don't go out of bounds (currentSegmentIndex is 0-based here effectively for progress)
       const safeIndex = Math.min(currentSegmentIndex, totalSegments);
       const progressRatio = safeIndex / Math.max(1, totalSegments);
       const pathIndex = Math.min(
@@ -121,11 +170,34 @@ const InlineMap: React.FC<Props> = ({ route, currentSegmentIndex, totalSegments 
           path.length - 1
       );
 
-      const newPos = path[pathIndex];
-      if (newPos) {
-          progressMarkerRef.current.setPosition(newPos);
-          // Optional: pan map to follow if desired, but fitting bounds usually enough for short routes
-          // googleMapRef.current.panTo(newPos); 
+      const targetPos = path[pathIndex];
+      const startPos = progressMarkerRef.current.getPosition();
+
+      if (targetPos && startPos) {
+          // Simple interpolation over 1.2 seconds when segment changes
+          let startTime = Date.now();
+          const duration = 1200; 
+          
+          const glide = () => {
+              const now = Date.now();
+              const elapsed = now - startTime;
+              const p = Math.min(elapsed / duration, 1);
+              
+              // Easing function: easeInOutCubic
+              const easedP = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+
+              const lat = startPos.lat() + (targetPos.lat() - startPos.lat()) * easedP;
+              const lng = startPos.lng() + (targetPos.lng() - startPos.lng()) * easedP;
+              
+              const newPos = new window.google.maps.LatLng(lat, lng);
+              progressMarkerRef.current.setPosition(newPos);
+              if (pulseCircleRef.current) pulseCircleRef.current.setCenter(newPos);
+
+              if (p < 1) {
+                  requestAnimationFrame(glide);
+              }
+          };
+          glide();
       }
 
   }, [currentSegmentIndex, totalSegments]);
